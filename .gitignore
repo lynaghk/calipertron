@@ -9,3 +9,6 @@ wheels/
 # venv
 .venv
 *.txt
+
+# cargo
+target/

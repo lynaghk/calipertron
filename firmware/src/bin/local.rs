@@ -7,7 +7,9 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::dma::*;
 use embassy_stm32::gpio::{Flex, Input, Level, Output, Speed};
+use embassy_stm32::peripherals::{DMA1_CH1, DMA1_CH2, TIM2};
 use embassy_stm32::time::Hertz;
+use embassy_stm32::timer::low_level::Timer;
 use embassy_stm32::{adc, Config};
 
 //use embassy_time::Duration;
@@ -37,7 +39,7 @@ async fn main(_spawner: Spawner) {
         config.rcc.apb1_pre = APBPrescaler::DIV2;
         config.rcc.apb2_pre = APBPrescaler::DIV1;
     }
-    let p = embassy_stm32::init(config);
+    let mut p = embassy_stm32::init(config);
 
     info!("Hello World!");
 
@@ -55,7 +57,7 @@ async fn main(_spawner: Spawner) {
         Output::new(p.PA7, Level::Low, Speed::Low),
     ];
 
-    let tim = embassy_stm32::timer::low_level::Timer::new(p.TIM2);
+    let mut tim = embassy_stm32::timer::low_level::Timer::new(p.TIM2);
     let timer_registers = tim.regs_gp16();
     timer_registers
         .cr2()
@@ -69,47 +71,46 @@ async fn main(_spawner: Spawner) {
 
     tim.set_frequency(Hertz(PDM_FREQUENCY));
 
-    let start_pdm = || unsafe {
-        let mut opts = TransferOptions::default();
-        opts.circular = true;
+    fn start_pdm<'a>(dma_ch: &'a mut DMA1_CH2, tim: &'_ mut Timer<'_, TIM2>) -> Transfer<'a> {
+        unsafe {
+            let mut opts = TransferOptions::default();
+            opts.circular = true;
 
-        let dma_ch = embassy_stm32::Peripheral::clone_unchecked(&p.DMA1_CH2);
-        let request = embassy_stm32::timer::UpDma::request(&dma_ch);
+            tim.reset();
 
-        tim.reset();
+            let t = Transfer::new_write(
+                dma_ch,
+                (),
+                &PDM_SIGNAL,
+                embassy_stm32::pac::GPIOA.bsrr().as_ptr() as *mut u32,
+                opts,
+            );
 
-        let t = Transfer::new_write(
-            dma_ch,
-            request,
-            &PDM_SIGNAL,
-            embassy_stm32::pac::GPIOA.bsrr().as_ptr() as *mut u32,
-            opts,
-        );
-
-        tim.start();
-        t
-    };
+            tim.start();
+            t
+        }
+    }
 
     ////////////////////////
     // ADC + DMA setup
 
-    let start_adc = |sample_buf| unsafe {
-        let dma_ch = embassy_stm32::Peripheral::clone_unchecked(&p.DMA1_CH1);
-        let request = embassy_stm32::adc::RxDma::request(&dma_ch);
-        let opts = TransferOptions::default();
+    fn start_adc<'a>(sample_buf: &'a mut [u16], dma_ch: &'a mut DMA1_CH1) -> Transfer<'a> {
+        unsafe {
+            let opts = TransferOptions::default();
 
-        let t = Transfer::new_read(
-            dma_ch,
-            request,
-            embassy_stm32::pac::ADC1.dr().as_ptr() as *mut u16,
-            sample_buf,
-            opts,
-        );
+            let t = Transfer::new_read(
+                dma_ch,
+                (),
+                embassy_stm32::pac::ADC1.dr().as_ptr() as *mut u16,
+                sample_buf,
+                opts,
+            );
 
-        // Start ADC conversions
-        embassy_stm32::pac::ADC1.cr2().modify(|w| w.set_adon(true));
-        t
-    };
+            // Start ADC conversions
+            embassy_stm32::pac::ADC1.cr2().modify(|w| w.set_adon(true));
+            t
+        }
+    }
 
     // just need this to power on ADC
     let _adc = adc::Adc::new(p.ADC1);
@@ -146,51 +147,46 @@ async fn main(_spawner: Spawner) {
     // 9.4mm spacing across all 8 emission pads on the v1.1 PCB Mitko sent me.
     let distance_per_phase_cycle = 9.4;
 
-    let fut_main = async {
-        loop {
-            // TODO: I'd rather this be local, but Transfer requires the buffer have the same lifetime as the DMA channel for some reason.
-            static mut ADC_BUF: [u16; NUM_SAMPLES] = [0u16; NUM_SAMPLES];
+    let adc_buf = &mut [0; NUM_SAMPLES];
 
-            let adc_buf = unsafe { &mut ADC_BUF[..] };
-            let adc_transfer = start_adc(adc_buf);
-            let mut pdm_transfer = start_pdm();
-            // wait for all of the samples to be taken
-            adc_transfer.await;
-            pdm_transfer.request_stop();
+    loop {
+        let adc_transfer = start_adc(adc_buf, &mut p.DMA1_CH1);
+        let mut pdm_transfer = start_pdm(&mut p.DMA1_CH2, &mut tim);
+        // wait for all of the samples to be taken
+        adc_transfer.await;
+        pdm_transfer.request_stop();
 
-            let mut sum_sine: f32 = 0.0;
-            let mut sum_cosine: f32 = 0.0;
+        let mut sum_sine: i32 = 0;
+        let mut sum_cosine: i32 = 0;
 
-            let adc_buf = unsafe { &ADC_BUF[..] };
-
-            for i in 0..NUM_SAMPLES {
-                let (sine, cosine) = SINE_COSINE_TABLE[i];
-                sum_sine += adc_buf[i] as f32 * sine;
-                sum_cosine += adc_buf[i] as f32 * cosine;
-            }
-            let phase = sum_sine.atan2(sum_cosine);
-
-            phase_accumulator.update(phase);
-            info!(
-                //"Phase: {:06.2} Position: {:06.2}",
-                "Position: {}mm, Phase: {} ",
-                phase_accumulator.unwrapped_phase
-                    * (distance_per_phase_cycle / (2.0 * core::f32::consts::PI)),
-                phase,
-            );
-
-            // make sure everything is reset before we continue
-            pdm_transfer.await;
-
-            ///////////////////////
-            // handle button press
-
-            if user_button.is_low() {
-                info!("Button pressed, zeroing");
-                phase_accumulator.unwrapped_phase = 0.;
-            }
+        for (&sample, (sine, cosine)) in adc_buf.iter().zip(SINE_COSINE_TABLE) {
+            sum_sine += sample as i32 * sine as i32;
+            sum_cosine += sample as i32 * cosine as i32;
         }
-    };
 
-    fut_main.await
+        let sum_sine = sum_sine as f32;
+        let sum_cosine = sum_cosine as f32;
+
+        let phase = sum_sine.atan2(sum_cosine);
+
+        phase_accumulator.update(phase);
+        info!(
+            //"Phase: {:06.2} Position: {:06.2}",
+            "Position: {}mm, Phase: {} ",
+            phase_accumulator.unwrapped_phase
+                * (distance_per_phase_cycle / (2.0 * core::f32::consts::PI)),
+            phase,
+        );
+
+        // make sure everything is reset before we continue
+        pdm_transfer.await;
+
+        ///////////////////////
+        // handle button press
+
+        if user_button.is_low() {
+            info!("Button pressed, zeroing");
+            phase_accumulator.unwrapped_phase = 0.;
+        }
+    }
 }

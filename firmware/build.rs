@@ -49,17 +49,46 @@ fn generate_sine_cosine_table(
     sampling_frequency: f64,
     num_samples: usize,
 ) -> String {
+    // TODO: a full sine/cosine table is wasteful, we can save memory by just
+    // storing a quarter sine wave and flipping/reversing the values as needed.
+
     let mut output = String::new();
-    output.push_str("pub const SINE_COSINE_TABLE: [(f32, f32); ");
+    output.push_str("pub const SINE_COSINE_TABLE: [(i16, i16); ");
     output.push_str(&num_samples.to_string());
     output.push_str("] = [\n");
 
+    let adc_bits = 12;
+    let max_adc = (1 << adc_bits) - 1;
+    let amplitude =
+        (i32::MAX as f64 * std::f64::consts::PI) / (max_adc as f64 * num_samples as f64);
+    // Using this amplitude can cause overflows, probably due to rounding
+    // and because our table isn't exactly one wavelength.
+    // We can fix it by scaling down a bit.
+    let amplitude = amplitude * 0.999;
+
+    let f_to_i16 = |x: f64| (x * amplitude).round() as i16;
+
+    // Just checking the max values, not the min values.
+    // It's probably fine.
+    let mut max_sine: i64 = 0;
+    let mut max_cosine: i64 = 0;
+
     for i in 0..num_samples {
         let angle = 2.0 * PI * signal_frequency * (i as f64 * (1.0 / sampling_frequency));
-        let sine = angle.sin() as f32;
-        let cosine = angle.cos() as f32;
+        let sine = f_to_i16(angle.sin());
+        let cosine = f_to_i16(angle.cos());
         output.push_str(&format!("    ({:?}, {:?}),\n", sine, cosine));
+
+        max_sine += sine as i64 * (if sine > 0 { max_adc as i64 } else { 0 });
+        max_cosine += cosine as i64 * (if cosine > 0 { max_adc as i64 } else { 0 });
     }
+
+    assert!(max_sine <= i32::MAX as i64);
+    assert!(max_cosine <= i32::MAX as i64);
+    // We also want to make sure we are using as much of the range as we can.
+    let ninetynine_percent = (i32::MAX as i64 * 99) / 100;
+    assert!(max_sine >= ninetynine_percent);
+    assert!(max_cosine >= ninetynine_percent);
 
     output.push_str("];\n");
     output
