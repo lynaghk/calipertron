@@ -74,20 +74,43 @@ fn main() {
     let dest_path = std::path::Path::new(&out_dir).join("constants.rs");
     let mut f = File::create(&dest_path).unwrap();
 
-    let pdm_frequency: u32 = 222_000;
-    f.write_all(format!("pub const PDM_FREQUENCY: u32 = {:?};\n", pdm_frequency).as_bytes())
+    // The PDM timer can only divide the 72 MHz timer clock by an integer, so the divider is
+    // the source of truth and all frequencies derive from it. With divider 324, table length
+    // 128, and the ADC at CYCLES41_5 (12 MHz / 54 = 222222.2 Hz) everything is coherent:
+    // the ADC takes exactly one sample per PDM tick and 128 samples per signal cycle, so a
+    // window integrates whole cycles and DC offset can't leak into the phase.
+    let timer_clock: f64 = 72_000_000.;
+    let pdm_timer_divider: u32 = 324;
+    let pdm_frequency = timer_clock / pdm_timer_divider as f64; // 222222.2 Hz
+
+    // Emitted as integer Hz for embassy's set_frequency, which floor-divides the timer
+    // clock: 72e6 / 222222 = 324.0003 -> divider 324, reproducing the intended rate.
+    let pdm_frequency_hz = pdm_frequency.floor() as u32;
+    assert_eq!(
+        timer_clock as u32 / pdm_frequency_hz,
+        pdm_timer_divider,
+        "rounded PDM_FREQUENCY must floor-divide back to the intended timer divider"
+    );
+    f.write_all(format!("pub const PDM_FREQUENCY: u32 = {:?};\n", pdm_frequency_hz).as_bytes())
         .unwrap();
 
     let pdm_length = 128;
     let num_samples = 128;
 
-    let signal_frequency = pdm_frequency as f64 / pdm_length as f64;
+    let signal_frequency = pdm_frequency / pdm_length as f64; // 1736.1 Hz
     let adc_frequency = 12_000_000.;
     // let adc_sample_cycles = 239.5;
     // let adc_sample_cycles = 71.5;
     let adc_sample_cycles = 41.5;
     let adc_sample_overhead_cycles = 12.5; // see reference manual section 11.6
     let sampling_frequency = adc_frequency / (adc_sample_cycles + adc_sample_overhead_cycles);
+
+    let samples_per_cycle = sampling_frequency / signal_frequency;
+    assert!(
+        (samples_per_cycle - samples_per_cycle.round()).abs() < 1e-9,
+        "ADC sampling is not coherent with the signal: {} samples per cycle",
+        samples_per_cycle
+    );
 
     f.write_all(
         generate_sine_cosine_table(signal_frequency, sampling_frequency, num_samples).as_bytes(),
