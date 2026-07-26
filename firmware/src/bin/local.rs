@@ -142,6 +142,9 @@ async fn main(_spawner: Spawner) {
     let user_button = Input::new(p.PB14, embassy_stm32::gpio::Pull::None);
 
     let mut phase_accumulator = PhaseAccumulator::new(0.0, 0.1);
+    // Valid across windows because every window restarts the PDM from phase zero, so they
+    // all share one phase reference.
+    let mut phasor_ema = PhasorEma::new(0.1);
 
     // 9.4mm spacing across all 8 emission pads on the v1.1 PCB Mitko sent me.
     let distance_per_phase_cycle = 9.4;
@@ -168,6 +171,7 @@ async fn main(_spawner: Spawner) {
                 sum_sine += adc_buf[i] as f32 * sine;
                 sum_cosine += adc_buf[i] as f32 * cosine;
             }
+            let (sum_sine, sum_cosine) = phasor_ema.update((sum_sine, sum_cosine));
             let phase = sum_sine.atan2(sum_cosine);
 
             phase_accumulator.update(phase);
