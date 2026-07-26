@@ -49,6 +49,17 @@ Parameter sweep:
 
 ## Log
 
+### 2026 Jul 26 - Have Fable throw together a few ideas
+
+I collected some raw ADC data and fed it into Anthropic's Fable 5 and had it write up some improvements.
+Notably:
+
+- Take into account the way the frequency divider works so our ADC sampling lines up exactly with our PDM drive signal
+- Exponential moving average phasors rather than phase (this prevents issues around +/- π)
+- Use a Hann window rather than rectangular window to reduce noise
+
+Now when the slide isn't moving the reading remains stable, and precision I get is about ~0.1mm while moving the slide
+
 ### Nov 2 - Initial public release, hurray!
 
 ### Nov 1 - Do proper grid search of params.
