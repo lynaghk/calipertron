@@ -56,8 +56,14 @@ fn generate_sine_cosine_table(
 
     for i in 0..num_samples {
         let angle = 2.0 * PI * signal_frequency * (i as f64 * (1.0 / sampling_frequency));
-        let sine = angle.sin() as f32;
-        let cosine = angle.cos() as f32;
+        // Hann-weight the correlation so interference at frequencies other than the signal
+        // integrates to near zero instead of leaking into the phase estimate. Periodic
+        // window (denominator N, like scipy's hann(sym=False)), not the symmetric N-1
+        // variant: its response nulls land exactly on the coherent bin frequencies, so the
+        // signal's own harmonics stay fully rejected.
+        let hann = 0.5 - 0.5 * (2.0 * PI * i as f64 / num_samples as f64).cos();
+        let sine = (hann * angle.sin()) as f32;
+        let cosine = (hann * angle.cos()) as f32;
         output.push_str(&format!("    ({:?}, {:?}),\n", sine, cosine));
     }
 
