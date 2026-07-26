@@ -95,7 +95,10 @@ fn main() {
         .unwrap();
 
     let pdm_length = 128;
-    let num_samples = 128;
+    // Two coherent signal cycles per demodulation window: correlating over more samples
+    // averages down random phase noise, and the resulting 868 Hz update rate is still far
+    // faster than the motion being measured.
+    let num_samples = 256;
 
     let signal_frequency = pdm_frequency / pdm_length as f64; // 1736.1 Hz
     let adc_frequency = 12_000_000.;
