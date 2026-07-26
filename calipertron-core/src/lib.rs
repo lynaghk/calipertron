@@ -2,8 +2,6 @@
 
 use core::f32::consts::PI;
 
-use num_traits::Float;
-
 /// Exponential moving average over (sine, cosine) correlation sums. Averaging in phasor
 /// space (before atan2) is immune to the wraparound artifacts that averaging raw phases
 /// would produce near +/-pi.

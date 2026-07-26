@@ -74,13 +74,12 @@ async fn main(_spawner: Spawner) {
         opts.circular = true;
 
         let dma_ch = embassy_stm32::Peripheral::clone_unchecked(&p.DMA1_CH2);
-        let request = embassy_stm32::timer::UpDma::request(&dma_ch);
 
         tim.reset();
 
         let t = Transfer::new_write(
             dma_ch,
-            request,
+            (),
             &PDM_SIGNAL,
             embassy_stm32::pac::GPIOA.bsrr().as_ptr() as *mut u32,
             opts,
@@ -95,12 +94,11 @@ async fn main(_spawner: Spawner) {
 
     let start_adc = |sample_buf| unsafe {
         let dma_ch = embassy_stm32::Peripheral::clone_unchecked(&p.DMA1_CH1);
-        let request = embassy_stm32::adc::RxDma::request(&dma_ch);
         let opts = TransferOptions::default();
 
         let t = Transfer::new_read(
             dma_ch,
-            request,
+            (),
             embassy_stm32::pac::ADC1.dr().as_ptr() as *mut u16,
             sample_buf,
             opts,
