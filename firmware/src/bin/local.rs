@@ -141,7 +141,9 @@ async fn main(_spawner: Spawner) {
 
     let user_button = Input::new(p.PB14, embassy_stm32::gpio::Pull::None);
 
-    let mut phase_accumulator = PhaseAccumulator::new(0.0, 0.1);
+    // 0.05 rad dead-band = 75um of position: wide enough that the EMA-smoothed phase noise
+    // stays below it, narrow enough not to swallow real motion.
+    let mut phase_accumulator = PhaseAccumulator::new(0.0, 0.05);
     // Valid across windows because every window restarts the PDM from phase zero, so they
     // all share one phase reference.
     let mut phasor_ema = PhasorEma::new(0.1);
